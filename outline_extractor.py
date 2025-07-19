@@ -5,7 +5,6 @@ import numpy as np
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTTextContainer, LTChar, LTLine, LTRect, LTFigure, LTTextBoxHorizontal
 
-# Global variable to store the current PDF path being processed (for context)
 current_pdf_path = None
 
 def get_font_weight_score(fontname):
@@ -17,7 +16,7 @@ def get_font_weight_score(fontname):
     if 'bold' in fontname_lower or 'bd' in fontname_lower or 'heavy' in fontname_lower or 'black' in fontname_lower:
         score += 2
     if 'italic' in fontname_lower or 'it' in fontname_lower:
-        score += 0.5 # Italic is less indicative of heading than bold
+        score += 0.5
     return score
 
 def get_text_properties(element, page_width, page_height, page_font_sizes=None, prev_element_bbox=None):
@@ -37,8 +36,6 @@ def get_text_properties(element, page_width, page_height, page_font_sizes=None, 
     font_is_italic = False
     font_weight_score = 0
     
-    # Iterate through text lines and characters within the LTTextBoxHorizontal
-    # to get font properties. Assume consistent font within a single line.
     for text_line in element:
         for character in text_line:
             if isinstance(character, LTChar):
@@ -49,8 +46,8 @@ def get_text_properties(element, page_width, page_height, page_font_sizes=None, 
                     font_is_bold = True
                 if 'italic' in fontname or 'it' in fontname:
                     font_is_italic = True
-                break # Found first character, assume consistent for the line
-        if font_size > 0: # If font size found, no need to check other lines in this box
+                break
+        if font_size > 0:
             break
 
     relative_font_size = 0
@@ -62,7 +59,7 @@ def get_text_properties(element, page_width, page_height, page_font_sizes=None, 
     vertical_space_above = 0
     if prev_element_bbox and element.bbox:
         vertical_space_above = element.bbox[1] - prev_element_bbox[3]
-        vertical_space_above = max(0, min(vertical_space_above, 100)) # Cap at 100 points
+        vertical_space_above = max(0, min(vertical_space_above, 100))
 
     x_position_normalized = element.bbox[0] / page_width if page_width > 0 else 0
     
@@ -72,7 +69,7 @@ def get_text_properties(element, page_width, page_height, page_font_sizes=None, 
     has_prefix = 0
     if text and len(text) > 2:
         first_word = text.split(' ')[0]
-        # More robust prefix check: "1.", "1.1.", "A.", "Chapter X", "Section Y"
+
         if (first_word.endswith('.') and (first_word[:-1].isdigit() or first_word[:-1].isalpha())) or \
            (first_word.isdigit() and len(first_word) < 4) or \
            (first_word.isupper() and len(first_word) < 8 and first_word.isalpha()) or \
@@ -108,37 +105,32 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
     all_elements_raw = [] 
     title = "Untitled Document"
 
-    # First pass: Collect all LTTextBoxHorizontal elements and their original layout objects
     for page_num, page_layout in enumerate(extract_pages(pdf_path)):
         page_width = page_layout.bbox[2] - page_layout.bbox[0]
         page_height = page_layout.bbox[3] - page_layout.bbox[1]
 
         page_elements_on_page = []
         for element in page_layout:
-            # Process LTTextBoxHorizontal for individual lines
             if isinstance(element, LTTextBoxHorizontal):
                 page_elements_on_page.append({
                     "element": element,
-                    "page": page_num + 1,
+                    "page": page_num,
                     "bbox": element.bbox,
                     "page_width": page_width,
                     "page_height": page_height
                 })
-            # Include non-text elements to correctly calculate vertical spacing
             elif isinstance(element, (LTLine, LTRect, LTFigure)):
                  page_elements_on_page.append({
                     "element": element,
-                    "page": page_num + 1,
+                    "page": page_num,
                     "bbox": element.bbox,
                     "page_width": page_width,
                     "page_height": page_height
                 })
         
-        # Sort elements by y-position (top to bottom) for vertical spacing calculation
         page_elements_on_page.sort(key=lambda x: x["bbox"][1], reverse=True)
         all_elements_raw.extend(page_elements_on_page)
 
-    # Determine the title (largest font on first page, or first H1)
     first_page_text_elements = [
         e["element"] for e in all_elements_raw if e["page"] == 1 and isinstance(e["element"], LTTextBoxHorizontal)
     ]
@@ -154,21 +146,19 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
         if title_candidates:
             title_candidates.sort(key=lambda x: (x["font_size"], x["bbox"][3]), reverse=True)
             for cand in title_candidates:
-                # Refined title filtering: must be long enough, not numeric, not common header/footer text
                 if cand["text"].strip() and len(cand["text"].strip()) > 10 and \
                    not cand["is_numeric_only"] and \
                    not cand["text"].lower().startswith("table of contents") and \
                    not cand["text"].lower().startswith("revision history") and \
                    not cand["text"].lower().startswith("acknowledgements") and \
                    not cand["text"].lower().startswith("page ") and \
-                   not (cand["text"].lower().count("overview") > 0 and cand["text"].lower().count("foundation level") > 0): # Specific header filter
-                    title = cand["text"].strip().replace('\n', ' ') # Clean title
+                   not (cand["text"].lower().count("overview") > 0 and cand["text"].lower().count("foundation level") > 0):
+                    title = cand["text"].strip().replace('\n', ' ')
                     break
-            if title == "Untitled Document" and title_candidates: # Fallback if no strong title found
+            if title == "Untitled Document" and title_candidates:
                 title = title_candidates[0]["text"].strip().replace('\n', ' ')
 
 
-    # Now, extract features for ML classification
     features_list = []
     texts = []
     pages = []
@@ -182,7 +172,7 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
         page_width = elem_data["page_width"]
         page_height = elem_data["page_height"]
 
-        if isinstance(element, LTTextBoxHorizontal): # Only process text boxes for features
+        if isinstance(element, LTTextBoxHorizontal):
             if page_num not in page_font_sizes_cache:
                 current_page_text_elements = [
                     e["element"] for e in all_elements_raw if e["page"] == page_num and isinstance(e["element"], LTTextBoxHorizontal)
@@ -195,7 +185,6 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
             props = get_text_properties(element, page_width, page_height, page_font_sizes_cache.get(page_num), prev_element_bbox)
             
             if props:
-                # Ensure the order of features matches the training data (13 features)
                 features_list.append([
                     props["font_size"],
                     int(props["is_uppercase"]), 
@@ -214,7 +203,7 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
                 texts.append(props["text"])
                 pages.append(page_num) 
             prev_element_bbox = props["bbox"] if props else element.bbox
-        else: # Non-text element, just update prev_element_bbox
+        else:
             prev_element_bbox = element.bbox
 
 
@@ -227,20 +216,18 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
     
     level_map = {0: "H1", 1: "H2", 2: "H3", 3: "Body"}
     
-    # Build the final outline with enhanced post-processing
     raw_outline_candidates = []
     for i, pred in enumerate(predictions):
         level = level_map.get(pred)
         cleaned_text = texts[i].strip()
         page = pages[i]
         
-        # Store all potential headings for a more robust final filtering pass
         if level in ["H1", "H2", "H3"]:
             raw_outline_candidates.append({
                 "level": level,
                 "text": cleaned_text,
                 "page": page,
-                "is_numeric_only": (cleaned_text.replace('.', '').replace(',', '').isdigit() and len(cleaned_text) < 10) # Re-check for post-processing
+                "is_numeric_only": (cleaned_text.replace('.', '').replace(',', '').isdigit() and len(cleaned_text) < 10)
             })
 
     final_outline = []
@@ -251,12 +238,9 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
         page = entry["page"]
         level = entry["level"] 
 
-        # Post-processing rules (more aggressive filtering):
-        # 1. Filter out very short or non-descriptive text
         if len(text) < 5 and not text.isupper() and not entry["is_numeric_only"] and not text.replace('.', '').isdigit():
             continue
         
-        # 2. Filter out common page numbers, "Version X", "Page X of Y", headers/footers
         if entry["is_numeric_only"] or \
            text.lower().startswith("page ") or \
            text.lower().startswith("version ") or \
@@ -264,24 +248,20 @@ def analyze_pdf_with_ml(pdf_path, model, scaler):
            text.lower().startswith("table of contents") or \
            text.lower().startswith("revision history") or \
            text.lower().startswith("acknowledgements") or \
-           (text.lower().count("overview") > 0 and text.lower().count("foundation level") > 0 and len(text) < 40): # Specific to the sample PDF's header
+           (text.lower().count("overview") > 0 and text.lower().count("foundation level") > 0 and len(text) < 40):
             continue
 
-        # 3. Handle multi-line predictions: if a predicted heading contains newlines, take only the first line
         if '\n' in text:
             text = text.split('\n')[0].strip()
-            if not text: # If first line is empty after strip, skip
+            if not text:
                 continue
-            # Re-check length and numeric after splitting
             if len(text) < 5 and not text.isupper() and not (text.replace('.', '').replace(',', '').replace(' ', '').isdigit() and len(text) < 10):
                 continue
         
-        # 4. De-duplication: Avoid adding the exact same text consecutively or if already seen
+        
         if text.lower() in seen_texts:
             continue
         
-        # Add to final outline and mark as seen
-        # IMPORTANT: Only include 'level', 'text', 'page' as per desired format
         final_outline.append({
             "level": level,
             "text": text,
@@ -327,8 +307,8 @@ def process_pdfs_in_directory(input_dir, output_dir, model_path, scaler_path):
             except Exception as e:
                 print(f"Error processing {filename}: {e}")
                 import traceback
-                traceback.print_exc() # Print full traceback for debugging
-
+                traceback.print_exc()
+                
 if __name__ == "__main__":
     INPUT_DIR = "/app/input"
     OUTPUT_DIR = "/app/output"
